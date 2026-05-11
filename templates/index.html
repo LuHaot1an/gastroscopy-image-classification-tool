@@ -10,29 +10,34 @@
   <body>
     <div class="container">
       <header class="hero">
-        <div>
+        <div class="hero-brand">
           <h1 class="title">{{ app_title }}</h1>
-          <p class="sub">面向临床医生的胃镜影像分类与标注系统</p>
+          <p class="sub">面向临床医生的胃镜影像查看、分类与标注系统</p>
         </div>
         <div class="hero-stats">
-          <div class="stat">
+          <div class="stat stat--total">
+            <span class="stat__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+            </span>
             <span class="stat-label">总数</span>
             <strong>{{ image_count }}</strong>
           </div>
-          <div class="stat">
+          <div class="stat stat--selected">
+            <span class="stat__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </span>
             <span class="stat-label">已入选</span>
             <strong>{{ selected_count }}</strong>
           </div>
-          <div class="stat">
+          <div class="stat stat--pending">
+            <span class="stat__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </span>
             <span class="stat-label">待处理</span>
             <strong>{{ pending_count }}</strong>
           </div>
         </div>
       </header>
-
-      {% if message %}
-        <div class="toast {{ message_type }}" role="status" aria-live="polite">{{ message }}</div>
-      {% endif %}
 
       <section class="card upload-card">
         <div class="card-title">第 1 步：选择影像文件夹</div>
@@ -46,12 +51,18 @@
         <div class="row wrap toolbar-row">
           <div class="current-folder">当前会话：<span class="mono">{{ folder_label }}</span></div>
           {% if has_folder %}
-            <form method="post" action="/reset-session">
+            <form method="post" action="/reset-session" onsubmit="return confirm('确认重新开始？当前会话中的影像与标注结果将被全部清空，且无法恢复。');">
               <button class="btn ghost" type="submit">重新开始</button>
             </form>
           {% endif %}
         </div>
       </section>
+
+      {% if message %}
+        <div id="toastLayer" class="toast-layer" role="status" aria-live="polite">
+          <div class="toast toast--float {{ message_type }}">{{ message }}</div>
+        </div>
+      {% endif %}
 
       <main class="main">
         <section class="left">
@@ -61,18 +72,49 @@
             </div>
             <div class="image-wrap">
               {% if has_folder and image_count > 0 %}
-                <img class="img" src="/image/current" alt="当前胃镜影像（第 {{ current_index + 1 }} 张）" />
+                {# ?i= 与当前索引绑定，避免 /image/current 固定 URL 被浏览器缓存成上一张 #}
+                <img class="img" src="/image/current?i={{ current_index }}" alt="当前胃镜影像（第 {{ current_index + 1 }} 张）" />
               {% else %}
-                <div class="empty">请先选择影像文件夹</div>
+                <div class="empty-state" role="status">
+                  <svg class="empty-state__icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="10" y="14" width="44" height="36" rx="4" stroke="currentColor" stroke-width="2"/>
+                    <path d="M10 26h44" stroke="currentColor" stroke-width="2"/>
+                    <circle cx="32" cy="38" r="8" stroke="currentColor" stroke-width="2"/>
+                    <path d="M29 38l2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <p class="empty-state__title">尚未载入影像</p>
+                  <p class="empty-state__desc">请先在上方完成第 1 步：选择影像文件夹并加载到工作区。</p>
+                </div>
               {% endif %}
             </div>
-            <div class="row wrap action-row">
-              <form method="post" action="/previous">
-                <button class="btn" type="submit" {% if not has_folder or image_count == 0 or current_index == 0 %}disabled{% endif %}>回到上一张</button>
-              </form>
-              <form method="post" action="/delete" onsubmit="return confirm('确认移出当前影像？该影像会进入拟删除目录，且不会写入入选结果。');">
-                <button class="btn danger" type="submit" {% if not has_folder or image_count == 0 %}disabled{% endif %}>移出批次</button>
-              </form>
+            <div class="action-row">
+              <div class="action-row__buttons row wrap">
+                <form method="post" action="/undo-current" onsubmit="return confirm('确认撤销当前影像的处理结果？将删除 Excel 中该图的记录以及「拟入选」「拟删除」目录中的副本，该图会重新回到「待处理」。');">
+                  <button class="btn" type="submit" {% if not has_folder or image_count == 0 or current_status not in ['拟入选', '拟删除'] %}disabled{% endif %}>撤销</button>
+                </form>
+                <form method="post" action="/delete">
+                  <button class="btn danger" type="submit" {% if not has_folder or image_count == 0 %}disabled{% endif %}>移出批次</button>
+                </form>
+              </div>
+              {% if has_folder and image_count > 0 and current_status == '拟入选' %}
+                <div class="annotation-summary annotation-summary--selected" role="status">
+                  {% if current_annotation %}
+                    <span class="annotation-summary__segment">
+                      <span class="annotation-summary__k">部位：</span><span class="annotation-summary__v">{{ current_annotation.part }}</span>
+                    </span>
+                    <span class="annotation-summary__sep" aria-hidden="true"></span>
+                    <span class="annotation-summary__segment">
+                      <span class="annotation-summary__k">症状：</span><span class="annotation-summary__v">{{ current_annotation.symptoms | join('、') }}</span>
+                    </span>
+                  {% else %}
+                    <span class="annotation-summary__fallback">拟入选（未在表格中找到记录）</span>
+                  {% endif %}
+                </div>
+              {% elif has_folder and image_count > 0 and current_status == '拟删除' %}
+                <div class="annotation-summary annotation-summary--deleted" role="status">
+                  <span class="annotation-summary__badge">拟删除</span>
+                </div>
+              {% endif %}
             </div>
           </div>
 
@@ -107,7 +149,12 @@
 
           <div class="card">
             <div class="card-title">第 3 步：症状选择（同一症状强/弱二选一）</div>
-            <input id="symptomSearch" class="input search-input" placeholder="搜索症状（可选）" />
+            <div class="search-field">
+              <span class="search-field__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              </span>
+              <input id="symptomSearch" class="input search-input" type="search" placeholder="搜索症状（可选）" autocomplete="off" />
+            </div>
             <div class="grid-2 symptoms-grid">
               {% for label in symptom_labels %}
                 <label class="option symptom-option" data-label="{{ label }}">
@@ -139,6 +186,8 @@
 
     <script>
       const SCROLL_KEY = "confirmScrollY";
+      const STATUS_LIST_SCROLL_KEY = "annoStatusListScroll";
+      const SYMPTOMS_GRID_SCROLL_KEY = "annoSymptomsGridScroll";
       const folderPicker = document.getElementById("folderPicker");
       const pickFolderBtn = document.getElementById("pickFolderBtn");
       const uploadBtn = document.getElementById("uploadBtn");
@@ -146,6 +195,7 @@
       const symptomSearch = document.getElementById("symptomSearch");
       const confirmForm = document.getElementById("confirmForm");
       const mutexPairs = {{ symptom_mutex_pairs | tojson }};
+      const currentImageStatus = {{ current_status | tojson }};
 
       const savedScrollY = sessionStorage.getItem(SCROLL_KEY);
       if (savedScrollY) {
@@ -157,6 +207,47 @@
         }
         sessionStorage.removeItem(SCROLL_KEY);
       }
+
+      function restoreElScrollTop(key, selector) {
+        const raw = sessionStorage.getItem(key);
+        if (raw === null) return;
+        sessionStorage.removeItem(key);
+        const v = Number(raw);
+        if (Number.isNaN(v)) return;
+        const el = document.querySelector(selector);
+        if (!el) return;
+        const apply = () => {
+          el.scrollTop = v;
+        };
+        requestAnimationFrame(() => {
+          apply();
+          requestAnimationFrame(apply);
+        });
+      }
+
+      restoreElScrollTop(STATUS_LIST_SCROLL_KEY, ".status-list");
+      restoreElScrollTop(SYMPTOMS_GRID_SCROLL_KEY, ".symptoms-grid");
+
+      /** 防止焦点滚动打乱列表内部 scrollTop（隐藏 checkbox/radio 获焦时常见） */
+      function preserveScrollOnFocus(scrollParent) {
+        if (!scrollParent) return;
+        scrollParent.addEventListener(
+          "focusin",
+          () => {
+            const top = scrollParent.scrollTop;
+            requestAnimationFrame(() => {
+              scrollParent.scrollTop = top;
+              requestAnimationFrame(() => {
+                scrollParent.scrollTop = top;
+              });
+            });
+          },
+          true
+        );
+      }
+
+      preserveScrollOnFocus(document.querySelector(".status-list"));
+      preserveScrollOnFocus(document.querySelector(".symptoms-grid"));
 
       pickFolderBtn?.addEventListener("click", () => folderPicker?.click());
 
@@ -209,25 +300,50 @@
         if (!selectedPart) {
           event.preventDefault();
           alert("请先在第 2 步选择一个部位。");
-          document.querySelector('input[name="part"][form="confirmForm"]')?.focus();
+          document.querySelector('input[name="part"][form="confirmForm"]')?.focus({ preventScroll: true });
           return;
         }
 
         if (selectedSymptoms.length === 0) {
           event.preventDefault();
           alert("请先在第 3 步至少选择一个症状。");
-          document.querySelector('input[name="symptoms"][form="confirmForm"]')?.focus();
+          document.querySelector('input[name="symptoms"][form="confirmForm"]')?.focus({ preventScroll: true });
           return;
+        }
+
+        const processedStatuses = ["拟入选", "拟删除"];
+        if (processedStatuses.includes(currentImageStatus)) {
+          const msg =
+            "当前影像已有处理结果。保存会先删除该影像在表格与结果目录中的旧记录，再以本次勾选重新写入。\n\n" +
+            "点击「确定」继续保存；点击「取消」放弃本次提交。";
+          if (!window.confirm(msg)) {
+            event.preventDefault();
+          }
         }
       });
 
-      // 对所有会触发页面跳转/重载的表单统一记忆滚动位置。
+      // 对所有会触发页面跳转/重载的表单统一记忆滚动位置（窗口 + 两个内部滚动区）。
       document.addEventListener("submit", (event) => {
         queueMicrotask(() => {
           if (event.defaultPrevented) return;
           sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
+          const statusList = document.querySelector(".status-list");
+          const symptomsGrid = document.querySelector(".symptoms-grid");
+          sessionStorage.setItem(STATUS_LIST_SCROLL_KEY, String(statusList?.scrollTop ?? 0));
+          sessionStorage.setItem(SYMPTOMS_GRID_SCROLL_KEY, String(symptomsGrid?.scrollTop ?? 0));
         });
       });
+
+      (function initToastAutoDismiss() {
+        const layer = document.getElementById("toastLayer");
+        if (!layer) return;
+        const visibleMs = 3800;
+        const fadeMs = 320;
+        window.setTimeout(() => {
+          layer.classList.add("toast-layer--hide");
+          window.setTimeout(() => layer.remove(), fadeMs);
+        }, visibleMs);
+      })();
     </script>
   </body>
 </html>

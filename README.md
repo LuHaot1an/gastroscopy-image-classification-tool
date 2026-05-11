@@ -12,7 +12,7 @@ The app is built with FastAPI and is designed to run locally, in Docker, or on a
 - Select one or more visual findings for each image.
 - Automatically enforce mutual exclusion between strong and weak versions of the same finding.
 - Save an annotation and move to the next image automatically.
-- Go back to the previous image and undo its saved result.
+- Undo the processed result for the **currently viewed** image (selected or deletion candidate → pending again).
 - Move low-quality or unwanted images to the deletion candidate group.
 - Jump between images from the status list.
 - Generate `图片信息.xlsx` automatically.
@@ -77,7 +77,7 @@ http://127.0.0.1:8000
    - Select one or more visual findings.
    - Click **Save and next**.
 4. If an image should be excluded from the selected set, click **Move out of batch**.
-5. Use **Previous** to go back and undo the saved result for the previous image.
+5. Use **Undo** to clear the saved result for the **current** image (removes Excel row and copies under `拟入选` / `拟删除`).
 6. After all images are processed, download:
    - **Excel file**
    - **Result ZIP package**

@@ -3,7 +3,8 @@ import secrets
 import shutil
 import zipfile
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -163,6 +164,45 @@ def check_all_processed(folder_path: str, image_files: List[str]) -> bool:
     return True
 
 
+def weak_display_label_for_feature(strong_label: str) -> str:
+    for strong, weak in ALL_STRENGTH_WEAK_PAIRS:
+        if strong == strong_label:
+            return weak
+    return f"{strong_label}（弱）"
+
+
+def read_selected_annotation(folder_path: str, image_name: str) -> Optional[Dict[str, Any]]:
+    """读取 Excel 中该图的拟入选标注（部位 + 勾选的强/弱症状标签）。"""
+    excel_path = os.path.join(folder_path, EXCEL_NAME)
+    if not os.path.exists(excel_path):
+        return None
+    wb = load_workbook(excel_path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or len(row) < 3:
+                continue
+            if row[1] != image_name:
+                continue
+            part = row[2] if row[2] is not None else ""
+            symptoms: List[str] = []
+            for i, feat_label in enumerate(EXCEL_FEATURE_LABELS):
+                col_idx = 3 + i
+                val = row[col_idx] if col_idx < len(row) else None
+                try:
+                    n = int(val) if val is not None and val != "" else 0
+                except (TypeError, ValueError):
+                    n = 0
+                if n == 2:
+                    symptoms.append(str(feat_label))
+                elif n == 1:
+                    symptoms.append(weak_display_label_for_feature(str(feat_label)))
+            return {"part": part, "symptoms": symptoms}
+        return None
+    finally:
+        wb.close()
+
+
 def remove_excel_rows_for_image(folder_path: str, image_name: str):
     excel_path = os.path.join(folder_path, EXCEL_NAME)
     if not os.path.exists(excel_path):
@@ -251,6 +291,11 @@ def strip_common_root(rel_path: str, root_name: Optional[str]) -> str:
     return "/".join(parts)
 
 
+def download_export_timestamp() -> str:
+    """下载文件名用时间后缀，格式 YYYYMMDDHHMMSS，避免同一分钟内重复覆盖。"""
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
 def build_result_zip(workspace_dir: str) -> str:
     zip_path = os.path.join(workspace_dir, "标注结果.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -281,9 +326,14 @@ def index(request: Request):
     state = _SESSIONS[sid]
 
     current_image = None
+    current_status: Optional[str] = None
+    current_annotation: Optional[Dict[str, Any]] = None
     statuses = []
     if state.workspace_dir and state.image_files:
         current_image = state.image_files[state.current_index]
+        current_status = status_for_image(state.workspace_dir, current_image)
+        if current_status == "拟入选":
+            current_annotation = read_selected_annotation(state.workspace_dir, current_image)
         statuses = [
             {"name": name, "status": status_for_image(state.workspace_dir, name)}
             for name in state.image_files
@@ -300,6 +350,8 @@ def index(request: Request):
         "image_count": len(state.image_files),
         "current_index": state.current_index,
         "current_image": current_image,
+        "current_status": current_status,
+        "current_annotation": current_annotation,
         "radio_dict": RADIO_DICT,
         "symptom_labels": SYMPTOM_LABELS,
         "symptom_mutex_pairs": SYMPTOM_MUTEX_PAIRS,
@@ -405,7 +457,14 @@ def get_current_image(request: Request):
     image_path = image_source_path(state.workspace_dir, image_name)
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(image_path)
+    # URL 固定为 /image/current 时浏览器会强缓存，导致切换索引后仍显示上一张；禁止缓存该动态资源。
+    return FileResponse(
+        image_path,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.post("/jump")
@@ -419,18 +478,17 @@ def jump(request: Request, index: int = Form(...)):
     return _redirect("/", sid)
 
 
-@app.post("/previous")
-def previous(request: Request):
+@app.post("/undo-current")
+def undo_current(request: Request):
     sid = get_session_id(request)
     state = _SESSIONS[sid]
     if not state.workspace_dir or not state.image_files:
         return _redirect("/", sid)
-    if state.current_index <= 0:
-        set_message(state, "已经是第一张影像，无法继续回退。", "warning")
-        return _redirect("/", sid)
 
-    state.current_index -= 1
     image_name = state.image_files[state.current_index]
+    if status_for_image(state.workspace_dir, image_name) == "待处理":
+        set_message(state, "当前影像尚未处理，无需撤销。", "warning")
+        return _redirect("/", sid)
 
     selected_path = selection_path(state.workspace_dir, image_name)
     deleted_path = deletion_path(state.workspace_dir, image_name)
@@ -440,7 +498,7 @@ def previous(request: Request):
         os.remove(deleted_path)
     remove_excel_rows_for_image(state.workspace_dir, image_name)
 
-    set_message(state, "已回到上一张，并撤销该张的标注结果。", "info")
+    set_message(state, "已撤销当前影像的处理结果。", "success")
     return _redirect("/", sid)
 
 
@@ -541,7 +599,8 @@ def download_excel(request: Request):
     excel_path = os.path.join(state.workspace_dir, EXCEL_NAME)
     if not os.path.exists(excel_path):
         raise HTTPException(status_code=404, detail="Excel not ready")
-    filename = f"{state.folder_label or '胃镜影像'}_图片信息.xlsx"
+    base = state.folder_label or "胃镜影像"
+    filename = f"{base}_图片信息_{download_export_timestamp()}.xlsx"
     return FileResponse(excel_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=filename)
 
 
@@ -554,7 +613,8 @@ def download_package(request: Request):
     zip_path = build_result_zip(state.workspace_dir)
     if not os.path.exists(zip_path):
         raise HTTPException(status_code=404, detail="Package not ready")
-    filename = f"{state.folder_label or '胃镜影像'}_标注结果.zip"
+    base = state.folder_label or "胃镜影像"
+    filename = f"{base}_标注结果_{download_export_timestamp()}.zip"
     return FileResponse(zip_path, media_type="application/zip", filename=filename)
 
 

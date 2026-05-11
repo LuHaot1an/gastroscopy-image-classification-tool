@@ -1,2 +1,67 @@
-# gastroscopy-image-classification-tool
-A web-based tool for assisting doctors in viewing gastroscopy images and manually classifying gastric endoscopic findings.
+# 胃镜影像标注工作站
+
+面向临床医生的胃镜影像分类与标注网页工具，支持浏览器直接选择文件夹、逐张标注、导出 Excel 与结果压缩包，适合本地运行或第三方托管。
+
+## 功能概览
+
+- 浏览器原生文件夹选择（无需手动输入路径）
+- 逐张查看影像并进行部位单选 + 症状复选（强/弱自动互斥）
+- 保存后自动进入下一张
+- 支持“回到上一张（撤销）”“移出批次（拟删除）”“状态跳转”
+- 自动生成 `图片信息.xlsx`
+- 一键下载 Excel 或完整结果压缩包
+
+## 本地运行
+
+1. 安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+2. 启动服务：
+
+```bash
+uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+3. 打开浏览器：
+
+`http://127.0.0.1:8000`
+
+## Docker 运行（推荐托管方式）
+
+1. 构建镜像：
+
+```bash
+docker build -t gastro-labeler:latest .
+```
+
+2. 启动容器：
+
+```bash
+docker run --rm -p 8000:8000 gastro-labeler:latest
+```
+
+3. 打开浏览器：
+
+`http://127.0.0.1:8000`
+
+## 医生使用步骤
+
+1. 点击 **选择影像文件夹**，在浏览器弹窗中选择目录
+2. 点击 **加载到工作区**
+3. 按顺序完成：
+   - 部位选择（单选）
+   - 症状选择（复选，系统自动处理强/弱互斥）
+   - 点击 **保存并下一张**
+4. 处理完成后点击：
+   - **下载 Excel**
+   - **下载结果压缩包**
+
+## 托管说明
+
+- 项目已统一为 FastAPI 单框架，不再依赖 `tkinter` 本地弹窗。
+- 采用浏览器文件上传模型，兼容云端托管场景（容器、PaaS、自建服务器）。
+- 运行时会在应用目录生成 `session_data/` 作为会话工作区（已加入 `.gitignore` 与 `.dockerignore`）。
+

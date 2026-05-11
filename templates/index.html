@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ app_title }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="hero">
+        <div>
+          <h1 class="title">{{ app_title }}</h1>
+          <p class="sub">面向临床医生的胃镜影像分类与标注系统</p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat">
+            <span class="stat-label">总数</span>
+            <strong>{{ image_count }}</strong>
+          </div>
+          <div class="stat">
+            <span class="stat-label">已入选</span>
+            <strong>{{ selected_count }}</strong>
+          </div>
+          <div class="stat">
+            <span class="stat-label">待处理</span>
+            <strong>{{ pending_count }}</strong>
+          </div>
+        </div>
+      </header>
+
+      {% if message %}
+        <div class="toast {{ message_type }}" role="status" aria-live="polite">{{ message }}</div>
+      {% endif %}
+
+      <section class="card upload-card">
+        <div class="card-title">第 1 步：选择影像文件夹</div>
+        <p class="helper-text">点击“选择影像文件夹”后，使用浏览器弹窗选择目录；再点击“加载到工作区”开始标注。</p>
+        <form id="uploadForm" class="row wrap" method="post" action="/upload-folder" enctype="multipart/form-data">
+          <input id="folderPicker" type="file" name="files" webkitdirectory directory multiple />
+          <button id="pickFolderBtn" class="btn primary" type="button">选择影像文件夹</button>
+          <button id="uploadBtn" class="btn" type="submit" disabled>加载到工作区</button>
+        </form>
+        <div id="pickedSummary" class="picked-summary">尚未选择文件夹</div>
+        <div class="row wrap toolbar-row">
+          <div class="current-folder">当前会话：<span class="mono">{{ folder_label }}</span></div>
+          {% if has_folder %}
+            <form method="post" action="/reset-session">
+              <button class="btn ghost" type="submit">重新开始</button>
+            </form>
+          {% endif %}
+        </div>
+      </section>
+
+      <main class="main">
+        <section class="left">
+          <div class="card image-card">
+            <div class="card-title">
+              第 {{ current_index + 1 if image_count > 0 else 0 }} / {{ image_count }} 张影像
+            </div>
+            <div class="image-wrap">
+              {% if has_folder and image_count > 0 %}
+                <img class="img" src="/image/current" alt="当前胃镜影像（第 {{ current_index + 1 }} 张）" />
+              {% else %}
+                <div class="empty">请先选择影像文件夹</div>
+              {% endif %}
+            </div>
+            <div class="row wrap action-row">
+              <form method="post" action="/previous">
+                <button class="btn" type="submit" {% if not has_folder or image_count == 0 or current_index == 0 %}disabled{% endif %}>回到上一张</button>
+              </form>
+              <form method="post" action="/delete" onsubmit="return confirm('确认移出当前影像？该影像会进入拟删除目录，且不会写入入选结果。');">
+                <button class="btn danger" type="submit" {% if not has_folder or image_count == 0 %}disabled{% endif %}>移出批次</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="card status-card">
+            <div class="card-title">全部影像进度（点击可跳转）</div>
+            <div class="status-list">
+              {% for item in statuses %}
+                <form method="post" action="/jump" class="status-row">
+                  <input type="hidden" name="index" value="{{ loop.index0 }}" />
+                  <button class="status-btn {% if loop.index0 == current_index %}active{% endif %}" type="submit">
+                    <span class="name">{{ item.name }}</span>
+                    <span class="tag {{ item.status }}">{{ item.status }}</span>
+                  </button>
+                </form>
+              {% endfor %}
+            </div>
+          </div>
+        </section>
+
+        <section class="right">
+          <div class="card">
+            <div class="card-title">第 2 步：部位选择（单选）</div>
+            <div class="grid-2">
+              {% for key, label in radio_dict.items() %}
+                <label class="option">
+                  <input type="radio" name="part" value="{{ key }}" form="confirmForm" />
+                  <span>{{ label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">第 3 步：症状选择（同一症状强/弱二选一）</div>
+            <input id="symptomSearch" class="input search-input" placeholder="搜索症状（可选）" />
+            <div class="grid-2 symptoms-grid">
+              {% for label in symptom_labels %}
+                <label class="option symptom-option" data-label="{{ label }}">
+                  <input type="checkbox" name="symptoms" value="{{ label }}" form="confirmForm" data-symptom="{{ label }}" />
+                  <span>{{ label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+            <div class="hint">系统会自动处理“强/弱”互斥关系，无需手动取消另一个选项。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">第 4 步：保存结果</div>
+            <form id="confirmForm" method="post" action="/confirm" class="row wrap">
+              <button class="btn primary wide" type="submit" {% if not has_folder or image_count == 0 %}disabled{% endif %}>保存并下一张</button>
+              {% if all_processed %}
+                <span class="done">所有影像已处理完成</span>
+              {% endif %}
+            </form>
+            <div class="row wrap download-row">
+              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/excel">下载 Excel</a>
+              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/package">下载结果压缩包</a>
+            </div>
+            <div class="hint">Excel 编码规则：强=2，弱=1，未选=0。</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const SCROLL_KEY = "confirmScrollY";
+      const folderPicker = document.getElementById("folderPicker");
+      const pickFolderBtn = document.getElementById("pickFolderBtn");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const pickedSummary = document.getElementById("pickedSummary");
+      const symptomSearch = document.getElementById("symptomSearch");
+      const confirmForm = document.getElementById("confirmForm");
+      const mutexPairs = {{ symptom_mutex_pairs | tojson }};
+
+      const savedScrollY = sessionStorage.getItem(SCROLL_KEY);
+      if (savedScrollY) {
+        const y = Number(savedScrollY);
+        if (!Number.isNaN(y)) {
+          requestAnimationFrame(() => {
+            window.scrollTo({ top: y, behavior: "auto" });
+          });
+        }
+        sessionStorage.removeItem(SCROLL_KEY);
+      }
+
+      pickFolderBtn?.addEventListener("click", () => folderPicker?.click());
+
+      folderPicker?.addEventListener("change", () => {
+        const files = folderPicker.files;
+        if (!files || files.length === 0) {
+          pickedSummary.textContent = "尚未选择文件夹";
+          uploadBtn.disabled = true;
+          return;
+        }
+        const firstPath = files[0].webkitRelativePath || files[0].name;
+        const folderName = firstPath.includes("/") ? firstPath.split("/")[0] : "已选择目录";
+        pickedSummary.textContent = `已选择：${folderName}（共 ${files.length} 个文件）`;
+        uploadBtn.disabled = false;
+      });
+
+      function setChecked(symptomLabel, checked) {
+        const el = document.querySelector(`input[type="checkbox"][data-symptom="${symptomLabel}"]`);
+        if (el) el.checked = checked;
+      }
+
+      function isChecked(symptomLabel) {
+        const el = document.querySelector(`input[type="checkbox"][data-symptom="${symptomLabel}"]`);
+        return el ? el.checked : false;
+      }
+
+      document.querySelectorAll('input[type="checkbox"][data-symptom]').forEach((el) => {
+        el.addEventListener("change", () => {
+          if (!el.checked) return;
+          const label = el.getAttribute("data-symptom");
+          for (const [a, b] of mutexPairs) {
+            if (label === a && isChecked(b)) setChecked(b, false);
+            if (label === b && isChecked(a)) setChecked(a, false);
+          }
+        });
+      });
+
+      symptomSearch?.addEventListener("input", () => {
+        const keyword = symptomSearch.value.trim().toLowerCase();
+        document.querySelectorAll(".symptom-option").forEach((el) => {
+          const label = (el.getAttribute("data-label") || "").toLowerCase();
+          el.style.display = !keyword || label.includes(keyword) ? "flex" : "none";
+        });
+      });
+
+      confirmForm?.addEventListener("submit", (event) => {
+        const selectedPart = document.querySelector('input[name="part"][form="confirmForm"]:checked');
+        const selectedSymptoms = document.querySelectorAll('input[name="symptoms"][form="confirmForm"]:checked');
+
+        if (!selectedPart) {
+          event.preventDefault();
+          alert("请先在第 2 步选择一个部位。");
+          document.querySelector('input[name="part"][form="confirmForm"]')?.focus();
+          return;
+        }
+
+        if (selectedSymptoms.length === 0) {
+          event.preventDefault();
+          alert("请先在第 3 步至少选择一个症状。");
+          document.querySelector('input[name="symptoms"][form="confirmForm"]')?.focus();
+          return;
+        }
+      });
+
+      // 对所有会触发页面跳转/重载的表单统一记忆滚动位置。
+      document.addEventListener("submit", (event) => {
+        queueMicrotask(() => {
+          if (event.defaultPrevented) return;
+          sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
+        });
+      });
+    </script>
+  </body>
+</html>
+

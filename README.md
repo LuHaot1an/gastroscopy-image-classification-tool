@@ -1,67 +1,134 @@
-# 胃镜影像标注工作站
+# Gastroscopy Image Annotation Workstation
 
-面向临床医生的胃镜影像分类与标注网页工具，支持浏览器直接选择文件夹、逐张标注、导出 Excel 与结果压缩包，适合本地运行或第三方托管。
+A browser-based annotation tool for gastroscopy images. It helps clinicians load an image folder, review images one by one, assign an anatomical location, select visual findings, and export the final annotations as an Excel file or a complete ZIP package.
 
-## 功能概览
+The app is built with FastAPI and is designed to run locally, in Docker, or on a third-party hosting platform.
 
-- 浏览器原生文件夹选择（无需手动输入路径）
-- 逐张查看影像并进行部位单选 + 症状复选（强/弱自动互斥）
-- 保存后自动进入下一张
-- 支持“回到上一张（撤销）”“移出批次（拟删除）”“状态跳转”
-- 自动生成 `图片信息.xlsx`
-- 一键下载 Excel 或完整结果压缩包
+## Features
 
-## 本地运行
+- Select an image folder directly from the browser.
+- Review gastroscopy images one by one.
+- Label each image with one anatomical location.
+- Select one or more visual findings for each image.
+- Automatically enforce mutual exclusion between strong and weak versions of the same finding.
+- Save an annotation and move to the next image automatically.
+- Go back to the previous image and undo its saved result.
+- Move low-quality or unwanted images to the deletion candidate group.
+- Jump between images from the status list.
+- Generate `图片信息.xlsx` automatically.
+- Download either the Excel file or a complete annotation result ZIP package.
 
-1. 安装依赖：
+## Supported Images
+
+The upload workflow accepts:
+
+- `.png`
+- `.jpg`
+- `.jpeg`
+
+Nested folders are supported. Relative paths are preserved in the session workspace and exported result folders.
+
+## Local Development
+
+1. Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. 启动服务：
+2. Start the development server:
 
 ```bash
 uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-3. 打开浏览器：
+3. Open the app in your browser:
 
-`http://127.0.0.1:8000`
+```text
+http://127.0.0.1:8000
+```
 
-## Docker 运行（推荐托管方式）
+## Docker
 
-1. 构建镜像：
+1. Build the image:
 
 ```bash
 docker build -t gastro-labeler:latest .
 ```
 
-2. 启动容器：
+2. Run the container:
 
 ```bash
 docker run --rm -p 8000:8000 gastro-labeler:latest
 ```
 
-3. 打开浏览器：
+3. Open the app in your browser:
 
-`http://127.0.0.1:8000`
+```text
+http://127.0.0.1:8000
+```
 
-## 医生使用步骤
+## Annotation Workflow
 
-1. 点击 **选择影像文件夹**，在浏览器弹窗中选择目录
-2. 点击 **加载到工作区**
-3. 按顺序完成：
-   - 部位选择（单选）
-   - 症状选择（复选，系统自动处理强/弱互斥）
-   - 点击 **保存并下一张**
-4. 处理完成后点击：
-   - **下载 Excel**
-   - **下载结果压缩包**
+1. Click **Select image folder** and choose a folder in the browser dialog.
+2. Click **Load to workspace** to upload the images into the current session.
+3. For each image:
+   - Choose one anatomical location.
+   - Select one or more visual findings.
+   - Click **Save and next**.
+4. If an image should be excluded from the selected set, click **Move out of batch**.
+5. Use **Previous** to go back and undo the saved result for the previous image.
+6. After all images are processed, download:
+   - **Excel file**
+   - **Result ZIP package**
 
-## 托管说明
+## Output Structure
 
-- 项目已统一为 FastAPI 单框架，不再依赖 `tkinter` 本地弹窗。
-- 采用浏览器文件上传模型，兼容云端托管场景（容器、PaaS、自建服务器）。
-- 运行时会在应用目录生成 `session_data/` 作为会话工作区（已加入 `.gitignore` 与 `.dockerignore`）。
+During runtime, the app creates a session workspace under `session_data/`.
 
+Each session may contain:
+
+```text
+session_data/
+  <session-id>/
+    原始图片/
+    拟入选/
+    拟删除/
+    图片信息.xlsx
+    标注结果.zip
+```
+
+The generated Excel file stores:
+
+- Image sequence number
+- Image name
+- Anatomical location
+- Finding scores
+
+Finding scores are encoded as:
+
+- `0`: not selected
+- `1`: weak finding selected
+- `2`: strong finding selected
+
+## Hosting Notes
+
+- The app uses a browser upload workflow and does not require desktop-only file dialogs such as `tkinter`.
+- It can be hosted with Docker, a PaaS provider, or a self-managed server.
+- Runtime session files are written to `session_data/`.
+- `session_data/`, `__pycache__/`, and Python bytecode files are excluded from Git and Docker build contexts.
+- Uploaded images are kept in the server-side session workspace until the session is reset or the workspace is cleaned up.
+
+## Health Check
+
+A simple health endpoint is available:
+
+```text
+GET /health
+```
+
+It returns:
+
+```json
+{"ok": true}
+```

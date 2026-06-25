@@ -21,45 +21,99 @@ SELECTED_DIR_NAME = "拟入选"
 DELETED_DIR_NAME = "拟删除"
 EXCEL_NAME = "图片信息.xlsx"
 
-NEW_STRENGTH_WEAK_BASES = [
+STRENGTH_WEAK_FEATURES = [
+    "萎缩",
+    "肠化生",
+    "弥漫性发红",
+    "皱襞肿大",
+    "结节性胃炎",
     "黏膜肿胀",
     "点状发红",
     "鸡皮样改变",
     "白色浑浊黏液",
-    "增生性息肉",
-    "黄色瘤",
     "地图状发红",
     "藤壶征",
     "RAC",
     "划痕征",
-    "胃底腺息肉",
     "陈旧性出血斑",
     "脊状发红",
-    "隆起性弥漫",
     "多发白色扁平隆起",
     "斑状发红",
     "凹陷性糜烂",
     "胃体糜烂",
+    "隆起性糜烂",
 ]
-CORE_STRENGTH_WEAK_PAIRS = [
-    ("萎缩", "萎缩（弱）"),
-    ("肠化生", "肠化生（弱）"),
-    ("弥漫性发红", "弥漫性发红（弱）"),
-]
-ALL_STRENGTH_WEAK_PAIRS = CORE_STRENGTH_WEAK_PAIRS + [
-    ("皱襞肿大", "皱襞肿大（弱）"),
-    ("结节性胃炎", "结节性胃炎（弱）"),
-] + [(b, f"{b}（弱）") for b in NEW_STRENGTH_WEAK_BASES]
+BINARY_FEATURES = ["增生性息肉", "黄色瘤", "胃底腺息肉", "正常 Normal", "其他情况 Others"]
+ABNORMAL_BINARY_FEATURES = ["增生性息肉", "黄色瘤", "胃底腺息肉", "其他情况 Others"]
+NORMAL_FEATURE = "正常 Normal"
+OTHERS_FEATURE = "其他情况 Others"
+DESCRIPTION_HEADER = "文字描述"
 
+ALL_STRENGTH_WEAK_PAIRS = [(label, f"{label}（弱）") for label in STRENGTH_WEAK_FEATURES]
 SYMPTOM_MUTEX_PAIRS = list(ALL_STRENGTH_WEAK_PAIRS)
 
-SYMPTOM_LABELS: List[str] = []
-for strong, weak in ALL_STRENGTH_WEAK_PAIRS:
-    SYMPTOM_LABELS.extend([strong, weak])
+SYMPTOM_CATEGORIES = [
+    {
+        "name": "发红",
+        "items": [
+            {"type": "strength", "label": "弥漫性发红"},
+            {"type": "strength", "label": "点状发红"},
+            {"type": "strength", "label": "地图状发红"},
+            {"type": "strength", "label": "斑状发红"},
+            {"type": "strength", "label": "脊状发红"},
+        ],
+    },
+    {
+        "name": "水肿",
+        "items": [
+            {"type": "strength", "label": "黏膜肿胀"},
+            {"type": "strength", "label": "皱襞肿大"},
+        ],
+    },
+    {
+        "name": "广泛黏膜改变",
+        "items": [
+            {"type": "strength", "label": "RAC"},
+            {"type": "strength", "label": "鸡皮样改变"},
+            {"type": "strength", "label": "萎缩"},
+            {"type": "strength", "label": "肠化生"},
+            {"type": "strength", "label": "结节性胃炎"},
+        ],
+    },
+    {
+        "name": "增生性改变",
+        "items": [
+            {"type": "strength", "label": "藤壶征"},
+            {"type": "strength", "label": "多发白色扁平隆起"},
+            {"type": "binary", "label": "黄色瘤"},
+            {"type": "binary", "label": "胃底腺息肉"},
+            {"type": "binary", "label": "增生性息肉"},
+        ],
+    },
+    {
+        "name": "糜烂&出血&其他",
+        "items": [
+            {"type": "strength", "label": "隆起性糜烂"},
+            {"type": "strength", "label": "凹陷性糜烂"},
+            {"type": "strength", "label": "胃体糜烂"},
+            {"type": "strength", "label": "划痕征"},
+            {"type": "strength", "label": "陈旧性出血斑"},
+            {"type": "strength", "label": "白色浑浊黏液"},
+        ],
+    },
+]
 
-EXCEL_FEATURE_LABELS = (
-    ["萎缩", "肠化生", "弥漫性发红", "皱襞肿大", "结节性胃炎"] + NEW_STRENGTH_WEAK_BASES
-)
+SYMPTOM_LABELS: List[str] = []
+for category in SYMPTOM_CATEGORIES:
+    for item in category["items"]:
+        label = str(item["label"])
+        if item["type"] == "strength":
+            SYMPTOM_LABELS.extend([label, f"{label}（弱）"])
+        else:
+            SYMPTOM_LABELS.append(label)
+SYMPTOM_LABELS.extend([NORMAL_FEATURE, OTHERS_FEATURE])
+
+EXCEL_FEATURE_LABELS = STRENGTH_WEAK_FEATURES + BINARY_FEATURES
 
 
 def normalize_relative_path(raw_path: str) -> str:
@@ -112,7 +166,7 @@ def list_images(folder_path: str) -> List[str]:
 
 def ensure_excel(folder_path: str):
     excel_path = os.path.join(folder_path, EXCEL_NAME)
-    expected_headers = ["序号", "图片名", "部位"] + EXCEL_FEATURE_LABELS
+    expected_headers = ["序号", "图片名", "部位"] + EXCEL_FEATURE_LABELS + [DESCRIPTION_HEADER]
 
     if os.path.exists(excel_path):
         wb = load_workbook(excel_path)
@@ -142,7 +196,34 @@ def feature_values_from_symptoms(symptoms: List[str]) -> Dict[str, int]:
     out: Dict[str, int] = {}
     for strong, weak in ALL_STRENGTH_WEAK_PAIRS:
         out[strong] = 2 if strong in s else (1 if weak in s else 0)
+    for label in BINARY_FEATURES:
+        out[label] = 1 if label in s else 0
+    if out[NORMAL_FEATURE]:
+        for label in EXCEL_FEATURE_LABELS:
+            out[label] = 1 if label == NORMAL_FEATURE else 0
     return out
+
+
+def annotation_description_from_features(features: Dict[str, int]) -> str:
+    if features.get(NORMAL_FEATURE, 0) == 1:
+        return "胃镜图像正常"
+
+    parts: List[str] = []
+    for label in EXCEL_FEATURE_LABELS:
+        if label == NORMAL_FEATURE:
+            continue
+        value = features.get(label, 0)
+        if not value:
+            continue
+        if label == OTHERS_FEATURE:
+            parts.append("胃镜图像有其他特征")
+        elif label in ABNORMAL_BINARY_FEATURES:
+            parts.append(f"有{label}")
+        elif value == 2:
+            parts.append(f"有典型{label}")
+        elif value == 1:
+            parts.append(f"有弱{label}")
+    return "，".join(parts)
 
 
 def status_for_image(folder_path: str, image_name: str) -> str:
@@ -172,7 +253,7 @@ def weak_display_label_for_feature(strong_label: str) -> str:
 
 
 def read_selected_annotation(folder_path: str, image_name: str) -> Optional[Dict[str, Any]]:
-    """读取 Excel 中该图的拟入选标注（部位 + 勾选的强/弱症状标签）。"""
+    """读取 Excel 中该图的拟入选标注（部位 + 勾选项 + 文字描述）。"""
     excel_path = os.path.join(folder_path, EXCEL_NAME)
     if not os.path.exists(excel_path):
         return None
@@ -186,6 +267,7 @@ def read_selected_annotation(folder_path: str, image_name: str) -> Optional[Dict
                 continue
             part = row[2] if row[2] is not None else ""
             symptoms: List[str] = []
+            values: Dict[str, int] = {}
             for i, feat_label in enumerate(EXCEL_FEATURE_LABELS):
                 col_idx = 3 + i
                 val = row[col_idx] if col_idx < len(row) else None
@@ -193,11 +275,19 @@ def read_selected_annotation(folder_path: str, image_name: str) -> Optional[Dict
                     n = int(val) if val is not None and val != "" else 0
                 except (TypeError, ValueError):
                     n = 0
+                values[str(feat_label)] = n
                 if n == 2:
                     symptoms.append(str(feat_label))
                 elif n == 1:
-                    symptoms.append(weak_display_label_for_feature(str(feat_label)))
-            return {"part": part, "symptoms": symptoms}
+                    if str(feat_label) in BINARY_FEATURES:
+                        symptoms.append(str(feat_label))
+                    else:
+                        symptoms.append(weak_display_label_for_feature(str(feat_label)))
+            description_col = 3 + len(EXCEL_FEATURE_LABELS)
+            description = row[description_col] if description_col < len(row) and row[description_col] else ""
+            if not description:
+                description = annotation_description_from_features(values)
+            return {"part": part, "symptoms": symptoms, "description": description}
         return None
     finally:
         wb.close()
@@ -354,7 +444,10 @@ def index(request: Request):
         "current_annotation": current_annotation,
         "radio_dict": RADIO_DICT,
         "symptom_labels": SYMPTOM_LABELS,
+        "symptom_categories": SYMPTOM_CATEGORIES,
         "symptom_mutex_pairs": SYMPTOM_MUTEX_PAIRS,
+        "normal_feature": NORMAL_FEATURE,
+        "others_feature": OTHERS_FEATURE,
         "statuses": statuses,
         "message": state.message,
         "message_type": state.message_type,
@@ -549,6 +642,7 @@ def confirm_current(
     radio_result = RADIO_DICT.get(part, "")
     features = feature_values_from_symptoms(symptoms)
     check_results = [features[label] for label in EXCEL_FEATURE_LABELS]
+    description = annotation_description_from_features(features)
 
     if not radio_result or not any(v > 0 for v in check_results):
         set_message(state, "请至少选择 1 个部位和 1 个症状后再保存。", "error")
@@ -575,6 +669,7 @@ def confirm_current(
     ws.cell(row=next_row, column=3, value=radio_result)
     for i, result in enumerate(check_results):
         ws.cell(row=next_row, column=4 + i, value=result)
+    ws.cell(row=next_row, column=4 + len(check_results), value=description)
     wb.save(excel_path)
 
     state.current_index += 1
@@ -621,4 +716,3 @@ def download_package(request: Request):
 @app.get("/health")
 def health():
     return {"ok": True}
-

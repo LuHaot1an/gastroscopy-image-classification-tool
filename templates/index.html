@@ -106,6 +106,12 @@
                     <span class="annotation-summary__segment">
                       <span class="annotation-summary__k">症状：</span><span class="annotation-summary__v">{{ current_annotation.symptoms | join('、') }}</span>
                     </span>
+                    {% if current_annotation.description %}
+                      <span class="annotation-summary__sep" aria-hidden="true"></span>
+                      <span class="annotation-summary__segment">
+                        <span class="annotation-summary__k">描述：</span><span class="annotation-summary__v">{{ current_annotation.description }}</span>
+                      </span>
+                    {% endif %}
                   {% else %}
                     <span class="annotation-summary__fallback">拟入选（未在表格中找到记录）</span>
                   {% endif %}
@@ -148,22 +154,53 @@
           </div>
 
           <div class="card">
-            <div class="card-title">第 3 步：症状选择（同一症状强/弱二选一）</div>
+            <div class="card-title">第 3 步：症状选择（可多选）</div>
             <div class="search-field">
               <span class="search-field__icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
               </span>
               <input id="symptomSearch" class="input search-input" type="search" placeholder="搜索症状（可选）" autocomplete="off" />
             </div>
-            <div class="grid-2 symptoms-grid">
-              {% for label in symptom_labels %}
-                <label class="option symptom-option" data-label="{{ label }}">
-                  <input type="checkbox" name="symptoms" value="{{ label }}" form="confirmForm" data-symptom="{{ label }}" />
-                  <span>{{ label }}</span>
+            <div class="symptoms-panel">
+              <div class="grid-2 priority-options">
+                <label class="option symptom-option special-option" data-label="{{ normal_feature }}">
+                  <input type="checkbox" name="symptoms" value="{{ normal_feature }}" form="confirmForm" data-symptom="{{ normal_feature }}" data-role="normal" />
+                  <span>{{ normal_feature }}</span>
                 </label>
+                <label class="option symptom-option special-option other-option" data-label="{{ others_feature }}">
+                  <input type="checkbox" name="symptoms" value="{{ others_feature }}" form="confirmForm" data-symptom="{{ others_feature }}" data-role="others" />
+                  <span>{{ others_feature }}</span>
+                </label>
+              </div>
+              {% for category in symptom_categories %}
+                <details class="symptom-category" data-category="{{ category['name'] }}">
+                  <summary class="symptom-category__summary">
+                    <span>{{ category['name'] }}</span>
+                    <span class="symptom-category__chevron" aria-hidden="true">⌄</span>
+                  </summary>
+                  <div class="grid-2 symptoms-grid">
+                    {% for item in category['items'] %}
+                      {% if item['type'] == "strength" %}
+                        <label class="option symptom-option" data-label="{{ item['label'] }}">
+                          <input type="checkbox" name="symptoms" value="{{ item['label'] }}" form="confirmForm" data-symptom="{{ item['label'] }}" data-role="abnormal" />
+                          <span>{{ item['label'] }}</span>
+                        </label>
+                        <label class="option symptom-option" data-label="{{ item['label'] }}（弱）">
+                          <input type="checkbox" name="symptoms" value="{{ item['label'] }}（弱）" form="confirmForm" data-symptom="{{ item['label'] }}（弱）" data-role="abnormal" />
+                          <span>{{ item['label'] }}（弱）</span>
+                        </label>
+                      {% else %}
+                        <label class="option symptom-option" data-label="{{ item['label'] }}">
+                          <input type="checkbox" name="symptoms" value="{{ item['label'] }}" form="confirmForm" data-symptom="{{ item['label'] }}" data-role="abnormal" />
+                          <span>{{ item['label'] }}</span>
+                        </label>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                </details>
               {% endfor %}
             </div>
-            <div class="hint">系统会自动处理“强/弱”互斥关系，无需手动取消另一个选项。</div>
+            <div class="hint">系统会自动处理“强/弱”和“正常 Normal”互斥关系，无需手动取消冲突选项。</div>
           </div>
 
           <div class="card">
@@ -178,7 +215,7 @@
               <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/excel">下载 Excel</a>
               <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/package">下载结果压缩包</a>
             </div>
-            <div class="hint">Excel 编码规则：强=2，弱=1，未选=0。</div>
+            <div class="hint">Excel 编码规则：强=2，弱=1；二值项选中=1；未选=0。</div>
           </div>
         </section>
       </main>
@@ -195,6 +232,7 @@
       const symptomSearch = document.getElementById("symptomSearch");
       const confirmForm = document.getElementById("confirmForm");
       const mutexPairs = {{ symptom_mutex_pairs | tojson }};
+      const normalFeature = {{ normal_feature | tojson }};
       const currentImageStatus = {{ current_status | tojson }};
 
       const savedScrollY = sessionStorage.getItem(SCROLL_KEY);
@@ -226,7 +264,7 @@
       }
 
       restoreElScrollTop(STATUS_LIST_SCROLL_KEY, ".status-list");
-      restoreElScrollTop(SYMPTOMS_GRID_SCROLL_KEY, ".symptoms-grid");
+      restoreElScrollTop(SYMPTOMS_GRID_SCROLL_KEY, ".symptoms-panel");
 
       /** 防止焦点滚动打乱列表内部 scrollTop（隐藏 checkbox/radio 获焦时常见） */
       function preserveScrollOnFocus(scrollParent) {
@@ -247,7 +285,7 @@
       }
 
       preserveScrollOnFocus(document.querySelector(".status-list"));
-      preserveScrollOnFocus(document.querySelector(".symptoms-grid"));
+      preserveScrollOnFocus(document.querySelector(".symptoms-panel"));
 
       pickFolderBtn?.addEventListener("click", () => folderPicker?.click());
 
@@ -265,19 +303,30 @@
       });
 
       function setChecked(symptomLabel, checked) {
-        const el = document.querySelector(`input[type="checkbox"][data-symptom="${symptomLabel}"]`);
+        const el = symptomInputs().find((input) => input.getAttribute("data-symptom") === symptomLabel);
         if (el) el.checked = checked;
       }
 
       function isChecked(symptomLabel) {
-        const el = document.querySelector(`input[type="checkbox"][data-symptom="${symptomLabel}"]`);
+        const el = symptomInputs().find((input) => input.getAttribute("data-symptom") === symptomLabel);
         return el ? el.checked : false;
       }
 
-      document.querySelectorAll('input[type="checkbox"][data-symptom]').forEach((el) => {
+      function symptomInputs() {
+        return Array.from(document.querySelectorAll('input[type="checkbox"][data-symptom]'));
+      }
+
+      symptomInputs().forEach((el) => {
         el.addEventListener("change", () => {
           if (!el.checked) return;
           const label = el.getAttribute("data-symptom");
+          if (label === normalFeature) {
+            symptomInputs().forEach((input) => {
+              if (input !== el) input.checked = false;
+            });
+            return;
+          }
+          setChecked(normalFeature, false);
           for (const [a, b] of mutexPairs) {
             if (label === a && isChecked(b)) setChecked(b, false);
             if (label === b && isChecked(a)) setChecked(a, false);
@@ -287,9 +336,23 @@
 
       symptomSearch?.addEventListener("input", () => {
         const keyword = symptomSearch.value.trim().toLowerCase();
-        document.querySelectorAll(".symptom-option").forEach((el) => {
+        document.querySelectorAll(".priority-options .symptom-option").forEach((el) => {
           const label = (el.getAttribute("data-label") || "").toLowerCase();
           el.style.display = !keyword || label.includes(keyword) ? "flex" : "none";
+        });
+        document.querySelectorAll(".symptom-category").forEach((category) => {
+          const categoryName = (category.getAttribute("data-category") || "").toLowerCase();
+          const categoryNameMatches = Boolean(keyword && categoryName.includes(keyword));
+          const visibleOptions = [];
+          category.querySelectorAll(".symptom-option").forEach((option) => {
+            const label = (option.getAttribute("data-label") || "").toLowerCase();
+            const visible = !keyword || categoryNameMatches || label.includes(keyword);
+            option.style.display = visible ? "flex" : "none";
+            if (visible) visibleOptions.push(option);
+          });
+          const categoryMatches = !keyword || categoryName.includes(keyword) || visibleOptions.length > 0;
+          category.style.display = categoryMatches ? "block" : "none";
+          if (keyword && categoryMatches) category.open = true;
         });
       });
 
@@ -328,7 +391,7 @@
           if (event.defaultPrevented) return;
           sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
           const statusList = document.querySelector(".status-list");
-          const symptomsGrid = document.querySelector(".symptoms-grid");
+          const symptomsGrid = document.querySelector(".symptoms-panel");
           sessionStorage.setItem(STATUS_LIST_SCROLL_KEY, String(statusList?.scrollTop ?? 0));
           sessionStorage.setItem(SYMPTOMS_GRID_SCROLL_KEY, String(symptomsGrid?.scrollTop ?? 0));
         });
@@ -347,4 +410,3 @@
     </script>
   </body>
 </html>
-

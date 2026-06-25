@@ -503,7 +503,8 @@ body {
 
 .btn:focus-visible,
 .status-btn:focus-visible,
-.option:focus-within {
+.option:focus-within,
+.symptom-category__summary:focus-visible {
   outline: none;
 }
 
@@ -515,7 +516,8 @@ body {
   box-shadow: 0 0 0 4px var(--primary-ring);
 }
 
-.option:focus-within {
+.option:focus-within,
+.symptom-category__summary:focus-visible {
   box-shadow: 0 0 0 3px var(--primary-ring);
 }
 
@@ -742,7 +744,7 @@ body {
   font-weight: 650;
 }
 
-.symptoms-grid {
+.symptoms-panel {
   max-height: 280px;
   overflow-y: auto;
   overflow-anchor: none;
@@ -751,13 +753,95 @@ body {
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
 }
 
-.symptoms-grid::-webkit-scrollbar {
+.symptoms-panel::-webkit-scrollbar {
   width: 6px;
 }
 
-.symptoms-grid::-webkit-scrollbar-thumb {
+.symptoms-panel::-webkit-scrollbar-thumb {
   background: rgba(148, 163, 184, 0.45);
   border-radius: 999px;
+}
+
+.priority-options {
+  margin-bottom: 10px;
+}
+
+.special-option {
+  border-color: rgba(15, 118, 110, 0.3);
+  background: #f0fdfa;
+}
+
+.special-option:has(input:checked) {
+  border-color: var(--accent-teal);
+  background: #ccfbf1;
+}
+
+.other-option {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+}
+
+.other-option:has(input:checked) {
+  border-color: #94a3b8;
+  background: #e5e7eb;
+}
+
+.symptom-category {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.symptom-category + .symptom-category {
+  margin-top: 10px;
+}
+
+.symptom-category__summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 46px;
+  padding: 12px 14px;
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.symptom-category__summary::-webkit-details-marker {
+  display: none;
+}
+
+.symptom-category__summary:hover {
+  background: #f8fafc;
+}
+
+.symptom-category[open] .symptom-category__summary {
+  background: var(--primary-soft);
+  color: var(--primary-deep);
+  border-bottom: 1px solid #dbeafe;
+}
+
+.symptom-category__chevron {
+  color: var(--subtle);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+
+.symptom-category[open] .symptom-category__chevron {
+  transform: rotate(180deg);
+}
+
+.symptom-category .symptoms-grid {
+  padding: 10px;
+  max-height: none;
+  overflow: visible;
 }
 
 /* —— Status list —— */

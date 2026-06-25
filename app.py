@@ -1,6 +1,8 @@
+import io
 import os
 import secrets
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,6 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook, load_workbook
+from starlette.background import BackgroundTask
 
 
 ALLOWED_EXTS = (".png", ".jpg", ".jpeg")
@@ -305,6 +308,46 @@ def remove_excel_rows_for_image(folder_path: str, image_name: str):
     wb.save(excel_path)
 
 
+def remove_file_silently(path: str):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def workbook_bytes_without_description(excel_path: str) -> bytes:
+    wb = load_workbook(excel_path)
+    try:
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        if DESCRIPTION_HEADER in headers:
+            ws.delete_cols(headers.index(DESCRIPTION_HEADER) + 1)
+        out = io.BytesIO()
+        wb.save(out)
+        return out.getvalue()
+    finally:
+        wb.close()
+
+
+def excel_download_response(excel_path: str, filename: str, include_description: bool) -> FileResponse:
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if include_description:
+        return FileResponse(excel_path, media_type=media_type, filename=filename)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    try:
+        tmp.write(workbook_bytes_without_description(excel_path))
+        tmp_path = tmp.name
+    finally:
+        tmp.close()
+    return FileResponse(
+        tmp_path,
+        media_type=media_type,
+        filename=filename,
+        background=BackgroundTask(remove_file_silently, tmp_path),
+    )
+
+
 @dataclass
 class SessionState:
     workspace_dir: Optional[str] = None
@@ -386,12 +429,15 @@ def download_export_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-def build_result_zip(workspace_dir: str) -> str:
+def build_result_zip(workspace_dir: str, include_description: bool = True) -> str:
     zip_path = os.path.join(workspace_dir, "标注结果.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         excel_path = os.path.join(workspace_dir, EXCEL_NAME)
         if os.path.exists(excel_path):
-            zf.write(excel_path, arcname=EXCEL_NAME)
+            if include_description:
+                zf.write(excel_path, arcname=EXCEL_NAME)
+            else:
+                zf.writestr(EXCEL_NAME, workbook_bytes_without_description(excel_path))
         for folder_name in (SELECTED_DIR_NAME, DELETED_DIR_NAME):
             folder_abs = os.path.join(workspace_dir, folder_name)
             if not os.path.isdir(folder_abs):
@@ -686,7 +732,7 @@ def confirm_current(
 
 
 @app.get("/download/excel")
-def download_excel(request: Request):
+def download_excel(request: Request, include_description: bool = True):
     sid = get_session_id(request)
     state = _SESSIONS[sid]
     if not state.workspace_dir:
@@ -696,16 +742,16 @@ def download_excel(request: Request):
         raise HTTPException(status_code=404, detail="Excel not ready")
     base = state.folder_label or "胃镜影像"
     filename = f"{base}_图片信息_{download_export_timestamp()}.xlsx"
-    return FileResponse(excel_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=filename)
+    return excel_download_response(excel_path, filename, include_description)
 
 
 @app.get("/download/package")
-def download_package(request: Request):
+def download_package(request: Request, include_description: bool = True):
     sid = get_session_id(request)
     state = _SESSIONS[sid]
     if not state.workspace_dir:
         raise HTTPException(status_code=404, detail="No session workspace")
-    zip_path = build_result_zip(state.workspace_dir)
+    zip_path = build_result_zip(state.workspace_dir, include_description=include_description)
     if not os.path.exists(zip_path):
         raise HTTPException(status_code=404, detail="Package not ready")
     base = state.folder_label or "胃镜影像"

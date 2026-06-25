@@ -212,8 +212,8 @@
               {% endif %}
             </form>
             <div class="row wrap download-row">
-              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/excel">下载 Excel</a>
-              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/package">下载结果压缩包</a>
+              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/excel" data-download-link>下载 Excel</a>
+              <a class="btn link-btn {% if not has_folder %}disabled-link{% endif %}" href="/download/package" data-download-link>下载结果压缩包</a>
             </div>
             <div class="hint">Excel 编码规则：强=2，弱=1；二值项选中=1；未选=0。</div>
           </div>
@@ -383,6 +383,22 @@
             event.preventDefault();
           }
         }
+      });
+
+      document.querySelectorAll("[data-download-link]").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          if (link.classList.contains("disabled-link")) {
+            event.preventDefault();
+            return;
+          }
+          event.preventDefault();
+          const includeDescription = window.confirm(
+            "是否希望在 Excel 中输出文字描述？\n\n点击“确定”：输出文字描述列。\n点击“取消”：不输出文字描述列。"
+          );
+          const url = new URL(link.href, window.location.href);
+          url.searchParams.set("include_description", includeDescription ? "1" : "0");
+          window.location.href = url.toString();
+        });
       });
 
       // 对所有会触发页面跳转/重载的表单统一记忆滚动位置（窗口 + 两个内部滚动区）。

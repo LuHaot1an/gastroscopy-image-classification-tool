@@ -14,7 +14,7 @@
           <h1 class="title">{{ app_title }}</h1>
           <p class="sub">面向临床医生的胃镜影像查看、分类与标注系统</p>
         </div>
-        <div class="hero-stats">
+        <div id="heroStats" class="hero-stats">
           <div class="stat stat--total">
             <span class="stat__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
@@ -153,7 +153,7 @@
             </div>
           </div>
 
-          <div class="card">
+          <div class="card symptom-card" id="symptomCard">
             <div class="card-title">第 3 步：症状选择（可多选）</div>
             <div class="search-field">
               <span class="search-field__icon" aria-hidden="true">
@@ -231,6 +231,8 @@
       const pickedSummary = document.getElementById("pickedSummary");
       const symptomSearch = document.getElementById("symptomSearch");
       const confirmForm = document.getElementById("confirmForm");
+      const symptomCard = document.getElementById("symptomCard");
+      const heroStats = document.getElementById("heroStats");
       const mutexPairs = {{ symptom_mutex_pairs | tojson }};
       const normalFeature = {{ normal_feature | tojson }};
       const currentImageStatus = {{ current_status | tojson }};
@@ -265,6 +267,57 @@
 
       restoreElScrollTop(STATUS_LIST_SCROLL_KEY, ".status-list");
       restoreElScrollTop(SYMPTOMS_GRID_SCROLL_KEY, ".symptoms-panel");
+
+      let statsFloating = heroStats?.classList.contains("hero-stats--floating") || false;
+
+      function updateFloatingStatsPosition() {
+        if (!heroStats) return;
+        const container = document.querySelector(".container");
+        const containerRight = container?.getBoundingClientRect().right ?? window.innerWidth - 128;
+        const viewportPadding = 18;
+        const statsWidth = 92;
+        const gap = 18;
+        const left = Math.min(containerRight + gap, window.innerWidth - statsWidth - viewportPadding);
+        heroStats.style.setProperty("--floating-stats-left", `${Math.max(viewportPadding, left)}px`);
+      }
+
+      function setFloatingStats(shouldFloat) {
+        if (!heroStats || shouldFloat === statsFloating) return;
+        updateFloatingStatsPosition();
+        const start = heroStats.getBoundingClientRect();
+        heroStats.classList.toggle("hero-stats--floating", shouldFloat);
+        statsFloating = shouldFloat;
+        const end = heroStats.getBoundingClientRect();
+        const dx = start.left - end.left;
+        const dy = start.top - end.top;
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (prefersReducedMotion) return;
+        heroStats.animate(
+          [
+            {
+              opacity: 0.96,
+              transform: shouldFloat
+                ? `translate(${dx}px, calc(-50% + ${dy}px)) scale(0.98)`
+                : `translate(${dx}px, ${dy}px) scale(0.98)`,
+            },
+            {
+              opacity: 1,
+              transform: shouldFloat ? "translate(0, -50%) scale(1)" : "translate(0, 0) scale(1)",
+            },
+          ],
+          { duration: 640, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+        );
+      }
+
+      function syncFloatingStats() {
+        updateFloatingStatsPosition();
+        const shouldFloat = window.scrollY > 160 && window.matchMedia("(min-width: 1081px)").matches;
+        setFloatingStats(shouldFloat);
+      }
+
+      window.addEventListener("scroll", syncFloatingStats, { passive: true });
+      window.addEventListener("resize", syncFloatingStats);
+      syncFloatingStats();
 
       /** 防止焦点滚动打乱列表内部 scrollTop（隐藏 checkbox/radio 获焦时常见） */
       function preserveScrollOnFocus(scrollParent) {
@@ -355,6 +408,16 @@
           if (keyword && categoryMatches) category.open = true;
         });
       });
+
+      function syncSymptomCardExpanded() {
+        const anyOpen = Array.from(document.querySelectorAll(".symptom-category")).some((category) => category.open);
+        symptomCard?.classList.toggle("symptom-card--expanded", anyOpen);
+      }
+
+      document.querySelectorAll(".symptom-category").forEach((category) => {
+        category.addEventListener("toggle", syncSymptomCardExpanded);
+      });
+      syncSymptomCardExpanded();
 
       confirmForm?.addEventListener("submit", (event) => {
         const selectedPart = document.querySelector('input[name="part"][form="confirmForm"]:checked');

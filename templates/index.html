@@ -72,8 +72,8 @@
             </div>
             <div class="image-wrap">
               {% if has_folder and image_count > 0 %}
-                {# ?i= 与当前索引绑定，避免 /image/current 固定 URL 被浏览器缓存成上一张 #}
-                <img class="img" src="/image/current?i={{ current_index }}" alt="当前胃镜影像（第 {{ current_index + 1 }} 张）" />
+                {# 索引定位具体图片；版本号在重新上传文件夹后变化，避免读到旧会话缓存。 #}
+                <img class="img" src="/image/current?i={{ current_index }}&amp;v={{ image_version }}" alt="当前胃镜影像（第 {{ current_index + 1 }} 张）" decoding="async" />
               {% else %}
                 <div class="empty-state" role="status">
                   <svg class="empty-state__icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -236,6 +236,21 @@
       const mutexPairs = {{ symptom_mutex_pairs | tojson }};
       const normalFeature = {{ normal_feature | tojson }};
       const currentImageStatus = {{ current_status | tojson }};
+      const nextImageIndex = {{ next_image_index | tojson }};
+      const imageVersion = {{ image_version | tojson }};
+
+      if (nextImageIndex !== null) {
+        const preloadNextImage = () => {
+          const nextImage = new Image();
+          nextImage.src = `/image/current?i=${nextImageIndex}&v=${encodeURIComponent(imageVersion)}`;
+          window.__nextImagePreload = nextImage;
+        };
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(preloadNextImage, { timeout: 1000 });
+        } else {
+          window.setTimeout(preloadNextImage, 250);
+        }
+      }
 
       const savedScrollY = sessionStorage.getItem(SCROLL_KEY);
       if (savedScrollY) {
@@ -464,15 +479,52 @@
         });
       });
 
-      // 对所有会触发页面跳转/重载的表单统一记忆滚动位置（窗口 + 两个内部滚动区）。
+      // 对所有会触发页面跳转/重载的表单统一记忆滚动位置，并防止重复提交。
       document.addEventListener("submit", (event) => {
-        queueMicrotask(() => {
-          if (event.defaultPrevented) return;
-          sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
-          const statusList = document.querySelector(".status-list");
-          const symptomsGrid = document.querySelector(".symptoms-panel");
-          sessionStorage.setItem(STATUS_LIST_SCROLL_KEY, String(statusList?.scrollTop ?? 0));
-          sessionStorage.setItem(SYMPTOMS_GRID_SCROLL_KEY, String(symptomsGrid?.scrollTop ?? 0));
+        if (event.defaultPrevented) return;
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (form.dataset.submitting === "true") {
+          event.preventDefault();
+          return;
+        }
+
+        sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
+        const statusList = document.querySelector(".status-list");
+        const symptomsGrid = document.querySelector(".symptoms-panel");
+        sessionStorage.setItem(STATUS_LIST_SCROLL_KEY, String(statusList?.scrollTop ?? 0));
+        sessionStorage.setItem(SYMPTOMS_GRID_SCROLL_KEY, String(symptomsGrid?.scrollTop ?? 0));
+
+        form.dataset.submitting = "true";
+        form.setAttribute("aria-busy", "true");
+        const submitButton = event.submitter;
+        if (submitButton instanceof HTMLButtonElement || submitButton instanceof HTMLInputElement) {
+          submitButton.dataset.originalLabel =
+            submitButton instanceof HTMLButtonElement ? submitButton.textContent || "" : submitButton.value;
+          submitButton.dataset.submittingDisabled = "true";
+          submitButton.disabled = true;
+          const action = form.getAttribute("action") || "";
+          const busyLabel = action === "/upload-folder" ? "正在上传…" : action === "/confirm" ? "正在保存…" : "处理中…";
+          if (submitButton instanceof HTMLButtonElement) {
+            submitButton.textContent = busyLabel;
+          } else {
+            submitButton.value = busyLabel;
+          }
+        }
+      });
+
+      window.addEventListener("pageshow", () => {
+        document.querySelectorAll('form[data-submitting="true"]').forEach((form) => {
+          form.removeAttribute("data-submitting");
+          form.removeAttribute("aria-busy");
+        });
+        document.querySelectorAll('[data-submitting-disabled="true"]').forEach((button) => {
+          button.disabled = false;
+          const originalLabel = button.dataset.originalLabel || "";
+          if (button instanceof HTMLButtonElement) button.textContent = originalLabel;
+          if (button instanceof HTMLInputElement) button.value = originalLabel;
+          delete button.dataset.originalLabel;
+          delete button.dataset.submittingDisabled;
         });
       });
 

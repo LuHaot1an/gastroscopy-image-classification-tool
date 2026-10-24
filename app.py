@@ -1,8 +1,10 @@
 import io
+import logging
 import os
 import secrets
 import shutil
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook, load_workbook
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 
 ALLOWED_EXTS = (".png", ".jpg", ".jpeg")
@@ -167,7 +170,7 @@ def list_images(folder_path: str) -> List[str]:
     return sorted(out)
 
 
-def ensure_excel(folder_path: str):
+def _load_or_create_annotation_workbook(folder_path: str):
     excel_path = os.path.join(folder_path, EXCEL_NAME)
     expected_headers = ["序号", "图片名", "部位"] + EXCEL_FEATURE_LABELS + [DESCRIPTION_HEADER]
 
@@ -175,21 +178,28 @@ def ensure_excel(folder_path: str):
         wb = load_workbook(excel_path)
         ws = wb.active
         current_headers = [cell.value for cell in ws[1]]
-        if current_headers != expected_headers:
-            backup_path = os.path.join(folder_path, "图片信息_旧表头备份.xlsx")
-            try:
-                shutil.copy2(excel_path, backup_path)
-            except Exception:
-                pass
-            wb = Workbook()
-            ws = wb.active
-            ws.append(expected_headers)
+        if current_headers == expected_headers:
+            return excel_path, wb, False
+        wb.close()
+        backup_path = os.path.join(folder_path, "图片信息_旧表头备份.xlsx")
+        try:
+            shutil.copy2(excel_path, backup_path)
+        except Exception:
+            pass
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(expected_headers)
+    return excel_path, wb, True
+
+
+def ensure_excel(folder_path: str):
+    excel_path, wb, needs_save = _load_or_create_annotation_workbook(folder_path)
+    try:
+        if needs_save:
             wb.save(excel_path)
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.append(expected_headers)
-        wb.save(excel_path)
+    finally:
+        wb.close()
 
     return excel_path
 
@@ -227,25 +237,6 @@ def annotation_description_from_features(features: Dict[str, int]) -> str:
         elif value == 1:
             parts.append(f"有弱{label}")
     return "，".join(parts)
-
-
-def status_for_image(folder_path: str, image_name: str) -> str:
-    selected_path = selection_path(folder_path, image_name)
-    deleted_path = deletion_path(folder_path, image_name)
-    if os.path.exists(selected_path):
-        return "拟入选"
-    if os.path.exists(deleted_path):
-        return "拟删除"
-    return "待处理"
-
-
-def check_all_processed(folder_path: str, image_files: List[str]) -> bool:
-    for image_name in image_files:
-        selected_path = selection_path(folder_path, image_name)
-        deleted_path = deletion_path(folder_path, image_name)
-        if not os.path.exists(selected_path) and not os.path.exists(deleted_path):
-            return False
-    return True
 
 
 def weak_display_label_for_feature(strong_label: str) -> str:
@@ -301,11 +292,54 @@ def remove_excel_rows_for_image(folder_path: str, image_name: str):
     if not os.path.exists(excel_path):
         return
     wb = load_workbook(excel_path)
-    ws = wb.active
-    for row in reversed(range(1, ws.max_row + 1)):
-        if ws.cell(row=row, column=2).value == image_name:
-            ws.delete_rows(row)
-    wb.save(excel_path)
+    try:
+        ws = wb.active
+        changed = False
+        for row in reversed(range(2, ws.max_row + 1)):
+            if ws.cell(row=row, column=2).value == image_name:
+                ws.delete_rows(row)
+                changed = True
+        if changed:
+            for row in range(2, ws.max_row + 1):
+                ws.cell(row=row, column=1, value=row - 1)
+            wb.save(excel_path)
+    finally:
+        wb.close()
+
+
+def upsert_excel_annotation(
+    folder_path: str,
+    image_name: str,
+    radio_result: str,
+    check_results: List[int],
+    description: str,
+):
+    """一次加载、一次保存，完成旧记录替换与新标注写入。"""
+    excel_path, wb, _ = _load_or_create_annotation_workbook(folder_path)
+    try:
+        ws = wb.active
+        for row in reversed(range(2, ws.max_row + 1)):
+            if ws.cell(row=row, column=2).value == image_name:
+                ws.delete_rows(row)
+
+        next_row = ws.max_row + 1
+        ws.cell(row=next_row, column=2, value=image_name)
+        ws.cell(row=next_row, column=3, value=radio_result)
+        for i, result in enumerate(check_results):
+            ws.cell(row=next_row, column=4 + i, value=result)
+        ws.cell(row=next_row, column=4 + len(check_results), value=description)
+
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=1, value=row - 1)
+        wb.save(excel_path)
+    finally:
+        wb.close()
+
+
+def copy_upload_to_path(source_file: Any, dest_path: str):
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with open(dest_path, "wb") as out_file:
+        shutil.copyfileobj(source_file, out_file)
 
 
 def remove_file_silently(path: str):
@@ -353,12 +387,26 @@ class SessionState:
     workspace_dir: Optional[str] = None
     folder_label: Optional[str] = None
     image_files: List[str] = field(default_factory=list)
+    image_statuses: Dict[str, str] = field(default_factory=dict)
+    image_version: str = field(default_factory=lambda: secrets.token_urlsafe(8))
     current_index: int = 0
     message: Optional[str] = None
     message_type: str = "info"
 
 
 app = FastAPI()
+PERFORMANCE_LOGGER = logging.getLogger("uvicorn.error")
+TIMED_PATHS = {
+    "/",
+    "/upload-folder",
+    "/image/current",
+    "/jump",
+    "/undo-current",
+    "/delete",
+    "/confirm",
+    "/download/excel",
+    "/download/package",
+}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_ROOT = os.path.join(BASE_DIR, "session_data")
 os.makedirs(SESSION_ROOT, exist_ok=True)
@@ -366,6 +414,23 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 _SESSIONS: Dict[str, SessionState] = {}
+
+
+@app.middleware("http")
+async def add_request_timing(request: Request, call_next):
+    started_at = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    response.headers["Server-Timing"] = f"app;dur={duration_ms:.1f}"
+    if request.url.path in TIMED_PATHS:
+        PERFORMANCE_LOGGER.info(
+            "performance method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+        )
+    return response
 
 
 def get_session_id(request: Request) -> str:
@@ -391,7 +456,30 @@ def clear_state_data(state: SessionState):
     state.workspace_dir = None
     state.folder_label = None
     state.image_files = []
+    state.image_statuses = {}
+    state.image_version = secrets.token_urlsafe(8)
     state.current_index = 0
+
+
+def cached_status_for_image(state: SessionState, image_name: str) -> str:
+    status = state.image_statuses.get(image_name)
+    if status:
+        return status
+    if state.workspace_dir:
+        if os.path.exists(selection_path(state.workspace_dir, image_name)):
+            status = "拟入选"
+        elif os.path.exists(deletion_path(state.workspace_dir, image_name)):
+            status = "拟删除"
+    if not status:
+        status = "待处理"
+    state.image_statuses[image_name] = status
+    return status
+
+
+def all_images_processed(state: SessionState) -> bool:
+    return bool(state.image_files) and all(
+        cached_status_for_image(state, image_name) != "待处理" for image_name in state.image_files
+    )
 
 
 def wipe_workspace(workspace_dir: Optional[str]):
@@ -467,11 +555,11 @@ def index(request: Request):
     statuses = []
     if state.workspace_dir and state.image_files:
         current_image = state.image_files[state.current_index]
-        current_status = status_for_image(state.workspace_dir, current_image)
+        current_status = cached_status_for_image(state, current_image)
         if current_status == "拟入选":
             current_annotation = read_selected_annotation(state.workspace_dir, current_image)
         statuses = [
-            {"name": name, "status": status_for_image(state.workspace_dir, name)}
+            {"name": name, "status": cached_status_for_image(state, name)}
             for name in state.image_files
         ]
     selected_count = sum(1 for item in statuses if item["status"] == "拟入选")
@@ -485,6 +573,8 @@ def index(request: Request):
         "has_folder": bool(state.workspace_dir),
         "image_count": len(state.image_files),
         "current_index": state.current_index,
+        "next_image_index": state.current_index + 1 if state.current_index + 1 < len(state.image_files) else None,
+        "image_version": state.image_version,
         "current_image": current_image,
         "current_status": current_status,
         "current_annotation": current_annotation,
@@ -500,7 +590,7 @@ def index(request: Request):
         "selected_count": selected_count,
         "deleted_count": deleted_count,
         "pending_count": pending_count,
-        "all_processed": bool(state.workspace_dir and check_all_processed(state.workspace_dir, state.image_files)),
+        "all_processed": bool(state.workspace_dir and pending_count == 0 and state.image_files),
     }
     state.message = None
     state.message_type = "info"
@@ -537,7 +627,7 @@ async def upload_folder(request: Request, files: List[UploadFile] = File(default
         parsed_files.append((upload, rel_path))
 
     folder_label = infer_folder_label(raw_names)
-    workspace_dir = ensure_workspace_for_session(sid)
+    workspace_dir = await run_in_threadpool(ensure_workspace_for_session, sid)
     source_root = source_dir(workspace_dir)
 
     saved_count = 0
@@ -548,9 +638,7 @@ async def upload_folder(request: Request, files: List[UploadFile] = File(default
                 await upload.close()
                 continue
             dest_path = join_rel(source_root, rel_path)
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            with open(dest_path, "wb") as out_file:
-                shutil.copyfileobj(upload.file, out_file)
+            await run_in_threadpool(copy_upload_to_path, upload.file, dest_path)
             saved_count += 1
             await upload.close()
     finally:
@@ -560,17 +648,19 @@ async def upload_folder(request: Request, files: List[UploadFile] = File(default
             except Exception:
                 pass
 
-    image_files = list_images(source_root)
+    image_files = await run_in_threadpool(list_images, source_root)
     if saved_count == 0 or not image_files:
-        wipe_workspace(workspace_dir)
+        await run_in_threadpool(wipe_workspace, workspace_dir)
         clear_state_data(state)
         set_message(state, "未检测到可用图片，请选择 png/jpg/jpeg 文件。", "error")
         return _redirect("/", sid)
 
-    ensure_excel(workspace_dir)
+    await run_in_threadpool(ensure_excel, workspace_dir)
     state.workspace_dir = workspace_dir
     state.folder_label = folder_label or "已上传影像"
     state.image_files = image_files
+    state.image_statuses = {image_name: "待处理" for image_name in image_files}
+    state.image_version = secrets.token_urlsafe(8)
     state.current_index = 0
     set_message(state, f"已加载 {len(image_files)} 张影像，可以开始标注。", "success")
     return _redirect("/", sid)
@@ -587,22 +677,22 @@ def reset_session(request: Request):
 
 
 @app.get("/image/current")
-def get_current_image(request: Request):
+def get_current_image(request: Request, i: Optional[int] = None):
     sid = get_session_id(request)
     state = _SESSIONS[sid]
     if not state.workspace_dir or not state.image_files:
         raise HTTPException(status_code=404, detail="No image loaded")
-    image_name = state.image_files[state.current_index]
+    image_index = state.current_index if i is None else i
+    if not 0 <= image_index < len(state.image_files):
+        raise HTTPException(status_code=404, detail="Image index out of range")
+    image_name = state.image_files[image_index]
     image_path = image_source_path(state.workspace_dir, image_name)
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Image not found")
-    # URL 固定为 /image/current 时浏览器会强缓存，导致切换索引后仍显示上一张；禁止缓存该动态资源。
+    # 图片索引与会话版本共同组成唯一 URL；原图不变，可以安全使用浏览器私有缓存。
     return FileResponse(
         image_path,
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-        },
+        headers={"Cache-Control": "private, max-age=86400, immutable"},
     )
 
 
@@ -625,7 +715,7 @@ def undo_current(request: Request):
         return _redirect("/", sid)
 
     image_name = state.image_files[state.current_index]
-    if status_for_image(state.workspace_dir, image_name) == "待处理":
+    if cached_status_for_image(state, image_name) == "待处理":
         set_message(state, "当前影像尚未处理，无需撤销。", "warning")
         return _redirect("/", sid)
 
@@ -636,6 +726,7 @@ def undo_current(request: Request):
     if os.path.exists(deleted_path):
         os.remove(deleted_path)
     remove_excel_rows_for_image(state.workspace_dir, image_name)
+    state.image_statuses[image_name] = "待处理"
 
     set_message(state, "已撤销当前影像的处理结果。", "success")
     return _redirect("/", sid)
@@ -660,10 +751,11 @@ def delete_current(request: Request):
     shutil.copy2(source_path, dest_path)
 
     remove_excel_rows_for_image(state.workspace_dir, image_name)
+    state.image_statuses[image_name] = "拟删除"
 
     state.current_index += 1
     if state.current_index >= len(state.image_files):
-        if check_all_processed(state.workspace_dir, state.image_files):
+        if all_images_processed(state):
             state.current_index = len(state.image_files) - 1
             set_message(state, "所有影像已处理完毕。", "success")
         else:
@@ -705,22 +797,18 @@ def confirm_current(
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     shutil.copy2(source_path, dest_path)
 
-    remove_excel_rows_for_image(state.workspace_dir, image_name)
-    excel_path = ensure_excel(state.workspace_dir)
-    wb = load_workbook(excel_path)
-    ws = wb.active
-    next_row = ws.max_row + 1
-    ws.cell(row=next_row, column=1, value=next_row - 1)
-    ws.cell(row=next_row, column=2, value=image_name)
-    ws.cell(row=next_row, column=3, value=radio_result)
-    for i, result in enumerate(check_results):
-        ws.cell(row=next_row, column=4 + i, value=result)
-    ws.cell(row=next_row, column=4 + len(check_results), value=description)
-    wb.save(excel_path)
+    upsert_excel_annotation(
+        state.workspace_dir,
+        image_name,
+        radio_result,
+        check_results,
+        description,
+    )
+    state.image_statuses[image_name] = "拟入选"
 
     state.current_index += 1
     if state.current_index >= len(state.image_files):
-        if check_all_processed(state.workspace_dir, state.image_files):
+        if all_images_processed(state):
             state.current_index = len(state.image_files) - 1
             set_message(state, "所有影像已处理完毕。", "success")
         else:
